@@ -1,0 +1,198 @@
+#!/usr/bin/env bash
+# Interactive generator for an onionize compose file.
+set -euo pipefail
+
+IMAGE_DEFAULT="ghcr.io/abiabdillahx/onionize"
+
+die() {
+  echo "error: $*" >&2
+  exit 1
+}
+
+ask() { # ask "prompt" "default" -> ANS
+  local a
+  if [ -n "${2:-}" ]; then
+    read -r -p "$1 [$2]: " a
+    ANS="${a:-$2}"
+  else
+    read -r -p "$1: " a
+    ANS="$a"
+  fi
+}
+
+choose() { # choose "prompt" item... -> PICK
+  local prompt="$1"
+  shift
+  local items=("$@") n=$# i a
+  [ "$n" -gt 0 ] || die "nothing to choose from"
+  echo "$prompt"
+  for i in "${!items[@]}"; do printf '  %d) %s\n' $((i + 1)) "${items[$i]}"; done
+  while true; do
+    read -r -p "> " a
+    if [[ "$a" =~ ^[0-9]+$ ]] && [ "$a" -ge 1 ] && [ "$a" -le "$n" ]; then
+      PICK="${items[$((a - 1))]}"
+      return
+    fi
+    echo "pick 1-$n"
+  done
+}
+
+yesno() { # yesno "prompt" y|n -> exit 0 if yes
+  local hint="[y/N]" a
+  [ "$2" = y ] && hint="[Y/n]"
+  read -r -p "$1 $hint " a
+  a="${a:-$2}"
+  [[ "$a" =~ ^[Yy] ]]
+}
+
+valid_port() { [[ "$1" =~ ^[0-9]+$ ]] && [ "$1" -ge 1 ] && [ "$1" -le 65535 ]; }
+
+ask_port() { # ask_port "prompt" "default" -> ANS
+  while true; do
+    ask "$1" "${2:-}"
+    valid_port "$ANS" && return
+    echo "enter a port between 1 and 65535"
+  done
+}
+
+in_array() {
+  local x="$1"
+  shift
+  local y
+  for y in "$@"; do [ "$x" = "$y" ] && return 0; done
+  return 1
+}
+
+banner() {
+  if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+    echo -e "\033[0;36m▄\033[0;96m▀\033[0;97m▀▄\033[0;37m  \033[0;36m▓\033[0;96m▀\033[0;97m▀▄\033[0;37m  \033[0;90m▀\033[0;36m▀█\033[0;96m▀\033[0;97m▀\033[0;37m \033[0;36m▄\033[0;96m▀\033[0;97m▀▄\033[0;37m  \033[0;36m▓\033[0;96m▀\033[0;97m▀▄\033[0;37m  \033[0;90m▀\033[0;36m▀█\033[0;96m▀\033[0;97m▀\033[0;37m \033[0;90m▀\033[0;36m▀▀\033[0;96m▀\033[0;97;46m▀\033[0;37m \033[0;36m▄▀▀\033[0;96m▀\033[0;97m▀\033[0m"
+    echo -e "\033[0;36m▒\033[0;37m   \033[0;96;46m▀\033[0;37m \033[0;36m▒\033[0;37m   \033[0;96;46m▀\033[0;37m   \033[0;36m▓\033[0;37m   \033[0;36m▒\033[0;37m   \033[0;96;46m▀\033[0;37m \033[0;36m▒\033[0;37m   \033[0;96;46m▀\033[0;37m   \033[0;36m▓\033[0;37m   ▄\033[0;96m▀\033[0;36m▀▀\033[0;90m▀\033[0;37m \033[0;36m▓▀\033[0;90m▀\033[0;37m  \033[0m"
+    echo -e "\033[0;36m▀▄▄▄▀\033[0;37m \033[0;36m░\033[0;37m   \033[0;36m█\033[0;37m \033[0;90m▄\033[0;36m▄▒\033[0;90m▄▄\033[0;37m \033[0;36m▀▄▄▄▀\033[0;37m \033[0;36m░\033[0;37m   \033[0;36m█\033[0;37m \033[0;90m▄\033[0;36m▄▒\033[0;90m▄▄\033[0;37m \033[0;36m▀▄▄▄\033[0;90m▄\033[0;37m \033[0;36m░▄▄▄\033[0;90m▄\033[0m"
+  else
+    cat <<'BANNER'
+▄▀▀▄  ▓▀▀▄  ▀▀█▀▀ ▄▀▀▄  ▓▀▀▄  ▀▀█▀▀ ▀▀▀▀▀ ▄▀▀▀▀
+▒   ▀ ▒   ▀   ▓   ▒   ▀ ▒   ▀   ▓   ▄▀▀▀▀ ▓▀▀  
+▀▄▄▄▀ ░   █ ▄▄▒▄▄ ▀▄▄▄▀ ░   █ ▄▄▒▄▄ ▀▄▄▄▄ ░▄▄▄▄
+BANNER
+  fi
+  echo
+  echo "  expose any Docker service as a Tor onion service"
+  echo
+}
+
+banner
+
+command -v docker >/dev/null || die "docker not found"
+docker info >/dev/null 2>&1 || die "cannot talk to the Docker daemon (not running, or no permission?)"
+
+targets=()
+nets=()
+used=()
+has_host=0
+
+while true; do
+  choose "Where does the service run?" "Docker container" "Directly on this host"
+
+  if [ "$PICK" = "Docker container" ]; then
+    mapfile -t netlist < <(docker network ls --format '{{.Name}}' | grep -Ev '^(bridge|host|none)$' || true)
+    [ "${#netlist[@]}" -gt 0 ] || die "no user-defined Docker networks found (start your containers with compose first)"
+    choose "Which Docker network?" "${netlist[@]}"
+    net="$PICK"
+
+    mapfile -t cl < <(docker ps --filter "network=$net" --format '{{.Names}}')
+    [ "${#cl[@]}" -gt 0 ] || die "no running containers on network '$net'"
+    choose "Which container?" "${cl[@]}"
+    host="$PICK"
+
+    mapfile -t ports < <(docker inspect --format '{{range $p, $_ := .Config.ExposedPorts}}{{println $p}}{{end}}' "$host" |
+      sed 's#/.*##' | grep -v '^$' | sort -un || true)
+    if [ "${#ports[@]}" -eq 1 ]; then
+      ask_port "Container port (internal, not the published one)" "${ports[0]}"
+    elif [ "${#ports[@]}" -gt 1 ]; then
+      choose "Which container port?" "${ports[@]}"
+      ask_port "Container port" "$PICK"
+    else ask_port "Container port (no EXPOSE found in image)" ""; fi
+    port="$ANS"
+
+    in_array "$net" "${nets[@]+"${nets[@]}"}" || nets+=("$net")
+  else
+    has_host=1
+    host="host.docker.internal"
+    ask_port "Port on the host" ""
+    port="$ANS"
+    echo "note: the app must listen on 0.0.0.0 (or the docker bridge IP), not 127.0.0.1."
+  fi
+
+  dv=80
+  in_array "$dv" "${used[@]+"${used[@]}"}" && dv="$port"
+  while true; do
+    ask_port "Onion port (what visitors use)" "$dv"
+    in_array "$ANS" "${used[@]+"${used[@]}"}" || break
+    echo "onion port $ANS is already used by another service"
+  done
+  vport="$ANS"
+
+  targets+=("$vport:$host:$port")
+  used+=("$vport")
+  yesno "Add another service?" n || break
+done
+
+ask "Image" "$IMAGE_DEFAULT"
+image="$ANS"
+harden=0
+yesno "Hardening (read-only rootfs, drop all caps)?" y && harden=1
+ask "Output file" "docker-compose.onion.yml"
+out="$ANS"
+if [ -e "$out" ]; then yesno "$out exists. Overwrite?" n || die "aborted"; fi
+
+target_str=$(
+  IFS=,
+  echo "${targets[*]}"
+)
+
+{
+  echo "services:"
+  echo "  onion:"
+  echo "    image: $image"
+  echo "    restart: unless-stopped"
+  echo "    environment:"
+  echo "      TARGET: \"$target_str\""
+  echo "    volumes:"
+  echo "      - onion-keys:/var/lib/tor"
+  if [ "${#nets[@]}" -gt 0 ]; then
+    echo "    networks:"
+    for i in "${!nets[@]}"; do echo "      - net$((i + 1))"; done
+  fi
+  if [ "$has_host" -eq 1 ]; then
+    echo "    extra_hosts:"
+    echo '      - "host.docker.internal:host-gateway"'
+  fi
+  if [ "$harden" -eq 1 ]; then
+    echo "    read_only: true"
+    echo "    tmpfs:"
+    echo "      - /tmp"
+    echo "    cap_drop:"
+    echo "      - ALL"
+    echo "    security_opt:"
+    echo "      - no-new-privileges:true"
+  fi
+  if [ "${#nets[@]}" -gt 0 ]; then
+    echo
+    echo "networks:"
+    for i in "${!nets[@]}"; do
+      echo "  net$((i + 1)):"
+      echo "    name: ${nets[$i]}"
+      echo "    external: true"
+    done
+  fi
+  echo
+  echo "volumes:"
+  echo "  onion-keys:"
+} >"$out"
+
+echo
+echo "wrote $out  (TARGET=$target_str)"
+echo
+echo "next:"
+echo "  docker compose -f $out up -d"
+echo "  docker compose -f $out logs -f   # look for: onion address: xxxx.onion"
