@@ -1,0 +1,28 @@
+services:
+  app:
+    image: nginx:alpine
+    restart: unless-stopped
+    # no `ports:` needed, the app is only reachable via the onion service
+
+  onion:
+    build: .                      # or: image: ghcr.io/<you>/tor-starter
+    restart: unless-stopped
+    depends_on:
+      - app
+    environment:
+      # host:port                -> onion port 80
+      # onionport:host:port      -> explicit onion port
+      # comma-separate for multiple services
+      TARGET: app:80
+    volumes:
+      - onion-keys:/var/lib/tor   # keeps the same .onion address across recreates
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  onion-keys:
