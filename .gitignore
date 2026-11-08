@@ -1,4 +1,8 @@
-.env
-
 docker-compose.*.yml
 !docker-compose.example.yml
+
+# never commit onion keys or secrets
+hs_ed25519_*
+hostname
+*.key
+.env
