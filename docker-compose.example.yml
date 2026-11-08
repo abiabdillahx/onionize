@@ -5,7 +5,7 @@ services:
     # no `ports:` needed, the app is only reachable via the onion service
 
   onion:
-    build: .                      # or: image: ghcr.io/<you>/tor-starter
+    image: ghcr.io/abiabdillahx/onionize   # or: build: .
     restart: unless-stopped
     depends_on:
       - app
