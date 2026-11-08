@@ -63,6 +63,32 @@ in_array() {
   return 1
 }
 
+host_ports() { # every port that belongs to a host (non-container) target
+  local t
+  for t in "${targets[@]}"; do
+    case "$t" in *:host.docker.internal:*) echo "${t##*:}" ;; esac
+  done
+}
+
+firewall_hint() { # best-effort name of whatever is likely dropping the packets
+  if systemctl is-active --quiet ufw 2>/dev/null; then
+    echo "sudo ufw allow in on docker0 to any port $1 proto tcp"
+  elif systemctl is-active --quiet firewalld 2>/dev/null; then
+    echo "sudo firewall-cmd --permanent --zone=trusted --add-interface=docker0 && sudo firewall-cmd --reload"
+  else
+    echo "allow TCP from the docker bridge (172.17.0.0/16) to port $1 on the host"
+  fi
+}
+
+reachable_from_container() { # reachable_from_container IMAGE PORT
+  docker run --rm --add-host probe.host:host-gateway --entrypoint sh "$1" -c \
+    "nc -z -w4 probe.host $2" >/dev/null 2>&1
+}
+
+reachable_from_host() { # reachable_from_host ADDR PORT  (bash /dev/tcp, no extra tools)
+  timeout 3 bash -c "exec 3<>/dev/tcp/$1/$2" 2>/dev/null
+}
+
 banner() {
   if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
     echo -e "\033[0;36m▄\033[0;96m▀\033[0;97m▀▄\033[0;37m  \033[0;36m▓\033[0;96m▀\033[0;97m▀▄\033[0;37m  \033[0;90m▀\033[0;36m▀█\033[0;96m▀\033[0;97m▀\033[0;37m \033[0;36m▄\033[0;96m▀\033[0;97m▀▄\033[0;37m  \033[0;36m▓\033[0;96m▀\033[0;97m▀▄\033[0;37m  \033[0;90m▀\033[0;36m▀█\033[0;96m▀\033[0;97m▀\033[0;37m \033[0;90m▀\033[0;36m▀▀\033[0;96m▀\033[0;97;46m▀\033[0;37m \033[0;36m▄▀▀\033[0;96m▀\033[0;97m▀\033[0m"
@@ -139,6 +165,65 @@ done
 
 ask "Image" "$IMAGE_DEFAULT"
 image="$ANS"
+
+# A host target has to cross the docker bridge, and a default-deny firewall
+# silently DROPs that. Tor still publishes an address, so the service looks
+# healthy while every visitor hangs. Test the real path instead of guessing.
+use_host_net=0
+if [ "$has_host" -eq 1 ]; then
+  mapfile -t hports < <(host_ports)
+  blocked=()
+  echo
+  echo "checking that a container can reach your host from here..."
+  for hp in "${hports[@]}"; do
+    reachable_from_container "$image" "$hp" || blocked+=("$hp")
+  done
+
+  if [ "${#blocked[@]}" -gt 0 ]; then
+    echo
+    echo "a container cannot reach port(s) ${blocked[*]} on this host."
+    echo "usually a firewall dropping traffic from the docker bridge, or the app"
+    echo "listening on 127.0.0.1 only. left as is, the .onion will just hang."
+    echo
+    if [ "${#nets[@]}" -eq 0 ]; then
+      choose "How do you want to handle it?" \
+        "Use the host network (no firewall change)" \
+        "Keep the bridge, I will open the firewall" \
+        "Continue anyway"
+      case "$PICK" in
+      "Use the host network (no firewall change)")
+        use_host_net=1
+        for i in "${!targets[@]}"; do
+          case "${targets[$i]}" in
+          *:host.docker.internal:*)
+            vp="${targets[$i]%%:*}"
+            tp="${targets[$i]##*:}"
+            addr=127.0.0.1
+            reachable_from_host 127.0.0.1 "$tp" || addr=172.17.0.1
+            targets[$i]="$vp:$addr:$tp"
+            ;;
+          esac
+        done
+        ;;
+      "Keep the bridge, I will open the firewall")
+        echo
+        for hp in "${blocked[@]}"; do echo "  $(firewall_hint "$hp")"; done
+        echo
+        echo "also make sure the app listens on 0.0.0.0 or 172.17.0.1, not 127.0.0.1."
+        yesno "Continue writing the compose file?" y || die "aborted"
+        ;;
+      esac
+    else
+      echo "this setup also targets containers, so the host network is not an option."
+      for hp in "${blocked[@]}"; do echo "  $(firewall_hint "$hp")"; done
+      echo
+      yesno "Continue anyway?" y || die "aborted"
+    fi
+  else
+    echo "ok, the host is reachable from a container."
+  fi
+fi
+
 harden=0
 yesno "Hardening (read-only rootfs, drop all caps)?" y && harden=1
 ask "Output file" "docker-compose.onion.yml"
@@ -159,13 +244,17 @@ target_str=$(
   echo "      TARGET: \"$target_str\""
   echo "    volumes:"
   echo "      - onion-keys:/var/lib/tor"
-  if [ "${#nets[@]}" -gt 0 ]; then
-    echo "    networks:"
-    for i in "${!nets[@]}"; do echo "      - net$((i + 1))"; done
-  fi
-  if [ "$has_host" -eq 1 ]; then
-    echo "    extra_hosts:"
-    echo '      - "host.docker.internal:host-gateway"'
+  if [ "$use_host_net" -eq 1 ]; then
+    echo "    network_mode: host"
+  else
+    if [ "${#nets[@]}" -gt 0 ]; then
+      echo "    networks:"
+      for i in "${!nets[@]}"; do echo "      - net$((i + 1))"; done
+    fi
+    if [ "$has_host" -eq 1 ]; then
+      echo "    extra_hosts:"
+      echo '      - "host.docker.internal:host-gateway"'
+    fi
   fi
   if [ "$harden" -eq 1 ]; then
     echo "    read_only: true"
@@ -176,7 +265,7 @@ target_str=$(
     echo "    security_opt:"
     echo "      - no-new-privileges:true"
   fi
-  if [ "${#nets[@]}" -gt 0 ]; then
+  if [ "${#nets[@]}" -gt 0 ] && [ "$use_host_net" -eq 0 ]; then
     echo
     echo "networks:"
     for i in "${!nets[@]}"; do
