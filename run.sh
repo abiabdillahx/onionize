@@ -80,6 +80,10 @@ firewall_hint() { # best-effort name of whatever is likely dropping the packets
   fi
 }
 
+can_run_container() { # can_run_container IMAGE -- a broken daemon must not look
+  docker run --rm --entrypoint sh "$1" -c true >/dev/null 2>&1
+}
+
 reachable_from_container() { # reachable_from_container IMAGE PORT
   docker run --rm --add-host probe.host:host-gateway --entrypoint sh "$1" -c \
     "nc -z -w4 probe.host $2" >/dev/null 2>&1
@@ -175,9 +179,20 @@ if [ "$has_host" -eq 1 ]; then
   blocked=()
   echo
   echo "checking that a container can reach your host from here..."
-  for hp in "${hports[@]}"; do
-    reachable_from_container "$image" "$hp" || blocked+=("$hp")
-  done
+  if ! can_run_container "$image"; then
+    # A daemon that cannot start any container would make every probe look
+    # like an unreachable host. Say what is actually wrong instead.
+    echo
+    echo "cannot start a test container, so the host path was not checked."
+    echo "this is a Docker problem, not a firewall one. see the real error with:"
+    echo "  docker run --rm --entrypoint sh $image -c true"
+    echo
+    yesno "Continue anyway?" y || die "aborted"
+  else
+    for hp in "${hports[@]}"; do
+      reachable_from_container "$image" "$hp" || blocked+=("$hp")
+    done
+  fi
 
   if [ "${#blocked[@]}" -gt 0 ]; then
     echo
