@@ -36,14 +36,14 @@ jobs:
 
       - name: Smoke test (torrc generated, onion address appears)
         run: |
-          docker run -d --name t -e TARGET=127.0.0.1:80 onionize:ci
+          docker run -d --name smoke -e TARGET=127.0.0.1:80 onionize:ci
           for _ in $(seq 1 60); do
-            if docker logs t 2>&1 | grep -q "onion address:"; then
-              docker logs t; exit 0
+            if docker logs smoke 2>&1 | grep -q "onion address:"; then
+              docker logs smoke; exit 0
             fi
-            if [ "$(docker inspect -f '{{.State.Running}}' t)" != "true" ]; then
-              docker logs t; exit 1
+            if [ "$(docker inspect -f '{{.State.Running}}' smoke)" != "true" ]; then
+              docker logs smoke; exit 1
             fi
             sleep 2
           done
-          docker logs t; exit 1
+          docker logs smoke; exit 1
