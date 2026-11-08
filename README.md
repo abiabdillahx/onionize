@@ -55,7 +55,7 @@ Requires `bash` and a running Docker daemon. Set `NO_COLOR=1` for a plain banner
 
 | Var | Default | Description |
 |---|---|---|
-| `TARGET` | required | `host:port` (served on onion port 80) or `onionport:host:port`. Comma-separate for multiple services |
+| `TARGET` | required | `host:port` (served on onion port 80) or `onionport:host:port`. Comma-separate for multiple services. Hostname or IPv4 only, no IPv6, and each onion port may appear once |
 | `WAIT_TIMEOUT` | `30` | Seconds to wait for the target hostname to resolve |
 | `HS_DIR` | `/var/lib/tor/hidden_service` | Hidden service directory. Rarely needs changing |
 
@@ -70,11 +70,19 @@ TARGET=web:80,22:ssh:22         # two different services, one .onion
 ## Notes
 
 - **Persist `/var/lib/tor`.** The onion private key lives there. Lose the volume and the `.onion` address is gone for good. Back it up, never commit it.
+- **Never share the key or the address carelessly.** `hs_ed25519_secret_key` *is* your service identity — anyone holding it can impersonate your `.onion`. When pasting logs into an issue, redact the address as `xxxx.onion`; an unlisted service stays unlisted only until it leaks.
 - **No `ports:` needed** on the app, so no host port conflicts.
 - **Hostname is resolved once at startup** (Tor behavior). If the app container is recreated with a new IP, run `docker compose restart onion`.
 - **An onion service is not an anonymous app.** Check that the app doesn't leak identity: absolute URLs to your clearnet domain, external fonts/CDNs, verbose `Server` / `X-Powered-By` headers, error pages that print hostnames.
 - Client + hidden service only (`SocksPort 0`). Not meant as a relay or exit node.
+- **IPv4 only.** Targets are resolved with `getent ahostsv4`; a literal IPv6 address in `TARGET` is not supported (the `host:port` parser splits on `:`).
 - Need a general Tor image (SOCKS proxy, relay, bridge)? See [dockurr/tor](https://hub.docker.com/r/dockurr/tor). Onionize is the narrow case: service in, `.onion` out.
+
+## License
+
+MIT (see `LICENSE`) — applies to this repository's source.
+
+The published container image also bundles third-party software under its own licenses, including Tor (BSD-3-Clause AND GPL-3.0-only) and Alpine base packages (GPL-2.0, LGPL-2.1, Apache-2.0, MIT). Sources for those are available from the Alpine package mirrors. Onionize is not affiliated with, nor endorsed by, The Tor Project.
 
 ## Build from source
 
