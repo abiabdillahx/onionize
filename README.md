@@ -1,6 +1,6 @@
 # onionize
 
-Expose any Docker service as a Tor onion service with one env var.
+Expose any Docker service as a Tor onion service with one env var. [Docs](https://onion.zenc.cc/) or try [the onion one](http://mwkysj4t57qdih2kvhjkiyzysludw5uvsm3obnk3lpmj5ylxerbx5wad.onion/)
 
 No `torrc` to write, no host ports to publish. Drop it next to your app in `docker-compose.yml`, set `TARGET`, and read the `.onion` address from the logs.
 
