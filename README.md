@@ -1,4 +1,4 @@
-# tor-starter
+# onionize
 
 Expose any Docker service as a Tor onion service with one env var.
 
