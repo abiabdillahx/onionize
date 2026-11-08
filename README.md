@@ -51,6 +51,36 @@ It asks whether your service runs in Docker or directly on the host, lists your 
 
 Requires `bash` and a running Docker daemon. Set `NO_COLOR=1` for a plain banner.
 
+## Getting the address later
+
+The address is printed once, at startup. To ask again, and to check that the
+service behind it is actually reachable:
+
+```sh
+cd /path/to/your/compose/project
+onion show
+```
+
+```
+g7oxklghekivbmrvryfofo4xn3x3vglrg7ygtjs4ih25zjoqn2kh3xyd.onion
+
+  container  test-onion-1  running (healthy)
+  :80     ->  172.17.0.1:1337          UNREACHABLE
+```
+
+That last line matters: Tor publishes an address whether or not your service
+answers, so a healthy container and a working `.onion` are not the same thing.
+
+`run.sh` offers to install the helper. Otherwise:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/abiabdillahx/onionize/main/onion \
+  -o ~/.local/bin/onion && chmod +x ~/.local/bin/onion
+```
+
+It reads the address from the hidden service directory, so it still works when
+the container is stopped.
+
 ## Configuration
 
 | Var | Default | Description |
@@ -70,7 +100,7 @@ TARGET=web:80,22:ssh:22         # two different services, one .onion
 ## Notes
 
 - **Persist `/var/lib/tor`.** The onion private key lives there. Lose the volume and the `.onion` address is gone for good. Back it up, never commit it.
-- **Never share the key or the address carelessly.** `hs_ed25519_secret_key` *is* your service identity — anyone holding it can impersonate your `.onion`. When pasting logs into an issue, redact the address as `xxxx.onion`; an unlisted service stays unlisted only until it leaks.
+- **Never share the key or the address carelessly.** `hs_ed25519_secret_key` *is* your service identity. Anyone holding it can impersonate your `.onion`. When pasting logs into an issue, redact the address as `xxxx.onion`; an unlisted service stays unlisted only until it leaks.
 - **No `ports:` needed** on the app, so no host port conflicts.
 - **Hostname is resolved once at startup** (Tor behavior). If the app container is recreated with a new IP, run `docker compose restart onion`.
 - **An onion service is not an anonymous app.** Check that the app doesn't leak identity: absolute URLs to your clearnet domain, external fonts/CDNs, verbose `Server` / `X-Powered-By` headers, error pages that print hostnames.
@@ -80,7 +110,7 @@ TARGET=web:80,22:ssh:22         # two different services, one .onion
 
 ## License
 
-MIT (see `LICENSE`) — applies to this repository's source.
+MIT (see `LICENSE`). It covers this repository's source.
 
 The published container image also bundles third-party software under its own licenses, including Tor (BSD-3-Clause AND GPL-3.0-only) and Alpine base packages (GPL-2.0, LGPL-2.1, Apache-2.0, MIT). Sources for those are available from the Alpine package mirrors. Onionize is not affiliated with, nor endorsed by, The Tor Project.
 

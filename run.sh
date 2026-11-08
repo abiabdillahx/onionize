@@ -357,3 +357,25 @@ echo "open it in Tor Browser (can take another 30-60s while the descriptor publi
 echo
 echo "logs:  $DC -f $out logs -f onion"
 echo "stop:  $DC -f $out down      (key is kept; 'down -v' deletes the address forever)"
+
+# The address is printed once. Offer the helper that can answer "what was it
+# again?" later, and say whether the target is actually reachable.
+if ! command -v onion >/dev/null 2>&1; then
+  here=$(cd -- "$(dirname -- "$0")" && pwd)
+  echo
+  if [ -f "$here/onion" ]; then
+    if yesno "Install the 'onion' helper to ~/.local/bin?" y; then
+      mkdir -p "$HOME/.local/bin"
+      install -m 0755 "$here/onion" "$HOME/.local/bin/onion" &&
+        echo "installed. run 'onion show' from this directory anytime."
+      case ":$PATH:" in
+      *":$HOME/.local/bin:"*) ;;
+      *) echo "note: ~/.local/bin is not on your PATH." ;;
+      esac
+    fi
+  else
+    echo "tip: 'onion show' prints this address later, and checks the target:"
+    echo "  curl -fsSL https://raw.githubusercontent.com/abiabdillahx/onionize/main/onion \\"
+    echo "    -o ~/.local/bin/onion && chmod +x ~/.local/bin/onion"
+  fi
+fi

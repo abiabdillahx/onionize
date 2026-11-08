@@ -1,0 +1,133 @@
+#!/usr/bin/env bash
+# onion - inspect the onionize service belonging to the compose project here.
+set -euo pipefail
+
+PROG=${0##*/}
+
+die() {
+  echo "$PROG: $*" >&2
+  exit 1
+}
+
+usage() {
+  cat <<EOF
+usage: $PROG show
+
+  show   print the .onion address for the compose project in the current
+         directory, and whether its targets are actually reachable.
+
+Run it from the directory holding the compose file you started onionize with.
+EOF
+}
+
+# Containers of the compose project rooted at this directory. Matching on the
+# working_dir label rather than the project name keeps this correct when the
+# project was renamed or the compose file is not called compose.yaml.
+project_containers() {
+  docker ps -aq --filter "label=com.docker.compose.project.working_dir=$PWD" 2>/dev/null
+}
+
+# An onionize container is one with a volume mounted at /var/lib/tor. That
+# holds while the container is stopped, unlike anything based on the image tag.
+is_onion_container() {
+  docker inspect -f '{{range .Mounts}}{{.Destination}}{{"\n"}}{{end}}' "$1" 2>/dev/null |
+    grep -qx /var/lib/tor
+}
+
+tor_volume() {
+  docker inspect -f '{{range .Mounts}}{{if eq .Destination "/var/lib/tor"}}{{.Name}}{{end}}{{end}}' "$1" 2>/dev/null
+}
+
+container_image() { docker inspect -f '{{.Config.Image}}' "$1" 2>/dev/null; }
+container_name() { docker inspect -f '{{.Name}}' "$1" 2>/dev/null | sed 's|^/||'; }
+container_state() { docker inspect -f '{{.State.Status}}' "$1" 2>/dev/null; }
+
+container_health() {
+  docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$1" 2>/dev/null
+}
+
+# The log line is printed once at startup and ages out; the file is the truth.
+address_of() {
+  local cid=$1 vol img
+  if [ "$(container_state "$cid")" = running ]; then
+    docker exec "$cid" cat /var/lib/tor/hidden_service/hostname 2>/dev/null | tr -d '\r\n' && return 0
+  fi
+  vol=$(tor_volume "$cid")
+  [ -n "$vol" ] || return 1
+  img=$(container_image "$cid")
+  docker run --rm -v "$vol:/v:ro" --entrypoint cat "$img" \
+    /v/hidden_service/hostname 2>/dev/null | tr -d '\r\n'
+}
+
+# Prefer the generated torrc: its targets are already resolved to addresses.
+targets_of() {
+  local cid=$1
+  if [ "$(container_state "$cid")" = running ]; then
+    docker exec "$cid" sh -c 'cat /tmp/torrc 2>/dev/null' 2>/dev/null |
+      awk '/^HiddenServicePort/ {print $2" "$3}'
+  else
+    docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$cid" 2>/dev/null |
+      sed -n 's/^TARGET=//p' | tr ',' '\n' | while read -r e; do
+      [ -n "$e" ] || continue
+      case "$(printf %s "$e" | tr -cd ':' | wc -c)" in
+      1) echo "80 $e" ;;
+      2) echo "${e%%:*} ${e#*:}" ;;
+      esac
+    done
+  fi
+}
+
+reachable() { # reachable CID ADDR PORT
+  docker exec "$1" nc -z -w4 "$2" "$3" >/dev/null 2>&1
+}
+
+show() {
+  local found=0 cid
+  for cid in $(project_containers); do
+    is_onion_container "$cid" || continue
+    found=1
+
+    local addr state health
+    addr=$(address_of "$cid" || true)
+    state=$(container_state "$cid")
+    health=$(container_health "$cid")
+
+    if [ -n "$addr" ]; then
+      echo "$addr"
+    else
+      echo "(no address yet - Tor may still be generating the key)"
+    fi
+
+    echo
+    printf '  container  %s  %s%s\n' "$(container_name "$cid")" "$state" \
+      "${health:+ ($health)}"
+
+    local vport dest ip port
+    while read -r vport dest; do
+      [ -n "$vport" ] || continue
+      ip=${dest%:*}
+      port=${dest##*:}
+      if [ "$state" != running ]; then
+        printf '  :%-6s ->  %-24s %s\n' "$vport" "$dest" "not checked (stopped)"
+      elif reachable "$cid" "$ip" "$port"; then
+        printf '  :%-6s ->  %-24s ok\n' "$vport" "$dest"
+      else
+        printf '  :%-6s ->  %-24s UNREACHABLE\n' "$vport" "$dest"
+      fi
+    done < <(targets_of "$cid")
+    echo
+  done
+
+  if [ "$found" -eq 0 ]; then
+    die "no onionize container for this directory.
+run this from the directory you started the compose file in, or start it first."
+  fi
+}
+
+command -v docker >/dev/null || die "docker not found"
+
+case "${1:-}" in
+show) show ;;
+-h | --help | help | "") usage ;;
+*) die "unknown command '$1' (try: $PROG show)" ;;
+esac
