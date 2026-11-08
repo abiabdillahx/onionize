@@ -39,6 +39,18 @@ docker run -d --name onion --network mynet \
 
 A hardened example (read-only rootfs, dropped caps) is in `docker-compose.example.yml`.
 
+## Interactive setup
+
+Don't want to write the YAML by hand? Run:
+
+```sh
+./run.sh
+```
+
+It asks whether your service runs in Docker or directly on the host, lists your Docker networks and running containers to pick from, detects the container port, writes `docker-compose.onion.yml`, starts it, and prints the `.onion` address once Tor is ready. Repeat the prompt to put several services behind one `.onion`.
+
+Requires `bash` and a running Docker daemon. Set `NO_COLOR=1` for a plain banner.
+
 ## Configuration
 
 | Var | Default | Description |

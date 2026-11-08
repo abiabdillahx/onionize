@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Interactive generator for an onionize compose file.
+# Interactive setup: generates an onionize compose file and starts it.
 set -euo pipefail
 
 IMAGE_DEFAULT="ghcr.io/abiabdillahx/onionize"
@@ -193,6 +193,63 @@ target_str=$(
 echo
 echo "wrote $out  (TARGET=$target_str)"
 echo
-echo "next:"
-echo "  docker compose -f $out up -d"
-echo "  docker compose -f $out logs -f   # look for: onion address: xxxx.onion"
+
+if docker compose version >/dev/null 2>&1; then
+  DC="docker compose"
+elif command -v docker-compose >/dev/null 2>&1; then
+  DC="docker-compose"
+else DC=""; fi
+
+manual() {
+  echo "to start it later:"
+  echo "  ${DC:-docker compose} -f $out up -d"
+  echo "  ${DC:-docker compose} -f $out logs -f onion"
+}
+
+if [ -z "$DC" ]; then
+  echo "docker compose not found."
+  manual
+  exit 0
+fi
+yesno "Start it now?" y || {
+  manual
+  exit 0
+}
+
+$DC -f "$out" up -d || die "compose up failed"
+
+printf 'waiting for the onion address (Tor bootstrap, up to ~2 min)'
+addr=""
+for _ in $(seq 1 60); do
+  addr=$($DC -f "$out" logs --no-color onion 2>&1 | sed -n 's/.*onion address: *//p' | head -n1 || true)
+  [ -n "$addr" ] && break
+  cid=$($DC -f "$out" ps -q onion 2>/dev/null || true)
+  if [ -z "$cid" ] || [ "$(docker inspect -f '{{.State.Running}}' "$cid" 2>/dev/null || true)" != "true" ]; then
+    echo
+    echo "container stopped. last logs:"
+    $DC -f "$out" logs --no-color --tail 20 onion || true
+    exit 1
+  fi
+  printf '.'
+  sleep 2
+done
+echo
+
+if [ -z "$addr" ]; then
+  echo "no onion address yet. check: $DC -f $out logs -f onion"
+  exit 1
+fi
+
+echo
+echo "onion is up:"
+for t in "${targets[@]}"; do
+  vp="${t%%:*}"
+  rest="${t#*:}"
+  if [ "$vp" = 80 ]; then url="http://$addr"; else url="http://$addr:$vp"; fi
+  printf '  %s  ->  %s\n' "$url" "$rest"
+done
+echo
+echo "open it in Tor Browser (can take another 30-60s while the descriptor publishes)."
+echo
+echo "logs:  $DC -f $out logs -f onion"
+echo "stop:  $DC -f $out down      (key is kept; 'down -v' deletes the address forever)"
